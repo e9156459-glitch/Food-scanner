@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Live Nutri-Scanner</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
+    <style>
+        body { font-family: sans-serif; margin: 0; background: #1a1a1a; color: white; overflow-x: hidden; }
+        .app-header { text-align: center; padding: 15px; background: #27ae60; position: sticky; top: 0; z-index: 100; }
+        
+        /* Live Scanner Viewport */
+        #scanner-container {
+            width: 100%;
+            height: 60vh;
+            background: #000;
+            position: relative;
+            overflow: hidden;
+        }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        canvas.drawingBuffer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+
+        /* Scanning Guide UI */
+        .overlay {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 80%; height: 150px;
+            border: 2px solid rgba(39, 174, 96, 0.8);
+            border-radius: 15px;
+            box-shadow: 0 0 0 1000px rgba(0,0,0,0.5);
+            z-index: 10;
+            pointer-events: none;
+        }
+        .scan-line {
+            position: absolute; width: 100%; height: 2px;
+            background: #ff0000; top: 0;
+            animation: moveLine 2s infinite linear;
+        }
+        @keyframes moveLine { from { top: 0%; } to { top: 100%; } }
+
+        /* Results Area */
+        .result-box {
+            background: white; color: #333;
+            padding: 20px; border-radius: 25px 25px 0 0;
+            margin-top: -30px; position: relative; z-index: 20;
+            min-height: 40vh;
+        }
+        .nutri-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #eee; }
+        .val { font-weight: bold; color: #27ae60; font-size: 1.1em; }
+        .status-msg { text-align: center; color: #777; font-size: 14px; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+
+<div class="app-header">
+    <h3 style="margin:0;">📸 NutriScan LIVE</h3>
+</div>
+
+<div id="scanner-container">
+    <div class="overlay">
+        <div class="scan-line"></div>
+    </div>
+</div>
+
+<div class="result-box">
+    <p id="status" class="status-msg">Itapat ang barcode sa loob ng box...</p>
+    
+    <div id="data-view" style="display:none;">
+        <h2 id="p-name" style="margin:0 0 5px 0;">Product Name</h2>
+        <p id="p-brand" style="color:#888; margin-bottom:20px;">Brand Name</p>
+        
+        <div class="nutri-row"><span>Calories</span> <span class="val"><span id="v-cal">0</span> kcal</span></div>
+        <div class="nutri-row"><span>Protein</span> <span class="val"><span id="v-pro">0</span> g</span></div>
+        <div class="nutri-row"><span>Carbs</span> <span class="val"><span id="v-carb">0</span> g</span></div>
+        <div class="nutri-row"><span>Fats</span> <span class="val"><span id="v-fat">0</span> g</span></div>
+        
+        <button onclick="restartScan()" style="width:100%; margin-top:20px; padding:15px; border:none; background:#27ae60; color:white; border-radius:10px; font-weight:bold;">SCAN AGAIN</button>
+    </div>
+</div>
+
+<script>
+    let lastCode = "";
+
+    function initLiveScanner() {
+        Quagga.init({
+            inputStream: {
+                name: "Live",
+                type: "LiveStream",
+                target: document.querySelector('#scanner-container'),
+                constraints: {
+                    facingMode: "environment",
+                    aspectRatio: { min: 1, max: 2 }
+                }
+            },
+            locator: { patchSize: "medium", halfSample: true },
+            decoder: { readers: ["ean_reader", "upc_reader", "code_128_reader"] }
+        }, function(err) {
+            if (err) {
+                document.getElementById('status').innerText = "Camera Error: Siguraduhing naka-HTTPS ka.";
+                return;
+            }
+            Quagga.start();
+        });
+
+        Quagga.onDetected((data) => {
+            let code = data.codeResult.code;
+            if (code !== lastCode) {
+                lastCode = code;
+                document.getElementById('status').innerText = "Found Barcode: " + code;
+                if(navigator.vibrate) navigator.vibrate(100); // Vibrate on scan
+                fetchNutrition(code);
+            }
+        });
+    }
+
+    async function fetchNutrition(barcode) {
+        Quagga.stop(); // Itigil ang camera habang naglo-load
+        try {
+            const res = await fetch(`https://world.openfoodfacts.org/api/v0/product/${barcode}.json`);
+            const data = await res.json();
+            
+            if (data.status === 1) {
+                const p = data.product;
+                const n = p.nutriments;
+                
+                document.getElementById('data-view').style.display = "block";
+                document.getElementById('status').style.display = "none";
+                document.getElementById('p-name').innerText = p.product_name || "Unknown Product";
+                document.getElementById('p-brand').innerText = p.brands || "No Brand Found";
+                
+                document.getElementById('v-cal').innerText = Math.round(n['energy-kcal_100g'] || 0);
+                document.getElementById('v-pro').innerText = (n['proteins_100g'] || 0).toFixed(1);
+                document.getElementById('v-carb').innerText = (n['carbohydrates_100g'] || 0).toFixed(1);
+                document.getElementById('v-fat').innerText = (n['fat_100g'] || 0).toFixed(1);
+            } else {
+                alert("Wala sa database ang barcode na ito.");
+                restartScan();
+            }
+        } catch (e) {
+            alert("Connection error.");
+            restartScan();
+        }
+    }
+
+    function restartScan() {
+        lastCode = "";
+        document.getElementById('data-view').style.display = "none";
+        document.getElementById('status').style.display = "block";
+        document.getElementById('status').innerText = "Scanning again...";
+        initLiveScanner();
+    }
+
+    // Start agad pag-load ng page
+    window.onload = initLiveScanner;
+</script>
+
+</body>
+</html>
